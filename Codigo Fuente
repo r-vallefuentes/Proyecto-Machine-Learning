@@ -1,0 +1,298 @@
+######### Carga de datos de entrenamiento ##########
+####################################################
+
+library(gsheet)
+url1 <- 'https://docs.google.com/spreadsheets/d/1cJZIUTPoYliSej8ZQumPdrvWjcZeRyuEqyC4JyXpx-8/edit#gid=1570725307'
+datos1 <- gsheet2tbl(url1)
+
+norm1<- as.data.frame (apply ( datos1 , 2 , function ( datos1 ) ( datos1  - min ( datos1 )) / (max ( datos1 ) - min ( datos1 ))))
+
+y_train<-norm1[,1]
+x<-norm1[,2:481]
+
+### Eliminacion de atributos con Datos ausentes ####
+####################################################
+
+which(is.na(x))
+x[!complete.cases(x)]
+x<-x[,-c(which(apply(x, 2, function(x) sum(is.na(x))>=1)))]    #1 para filas y 2 para columnas       
+which(is.na(x))
+
+
+boxplot(x)
+dim(x)
+
+#### Eliminacion de atributos con datos atipicos ###
+####################################################
+
+ID<-numeric()
+for(i in 1:dim(x)[2]){
+ 
+  q<-boxplot(x[,i]) 
+ 
+  if (q$stats[1,1]>0 || q$stats[5,1]<1){
+    print(x[,i])
+    ID<-rbind(ID,c(i,x[,i]))
+  }
+}
+ID
+
+x<-x[,-c(ID[,1])]
+dim(x)
+boxplot(x)
+
+#### Eliminacion de atributos de clasificacion #####
+################# (hasta 4 clases) #################
+
+ID<-numeric()
+for(i in 1:dim(x)[2]){
+  if(nlevels(as.factor(x[,i]))<=4){
+  print(nlevels(as.factor(x[,i])))
+  ID<-rbind(ID,c(i,nlevels(as.factor(x[,i]))))
+  }
+}
+ID[,1]
+
+x<-x[,-c(ID[,1])]
+dim(x)
+boxplot(x)
+
+######################## PCA #######################
+#################################################### 
+
+acp<-prcomp(x)
+z<-print(acp)
+plot(acp, type="l")
+summary(acp)
+plot(acp)
+
+biplot(acp,scale=0)
+
+library(ggplot2)
+ggplot(data = data.frame(cumsum( acp$sdev^2 / sum(acp$sdev^2)), pc=1:42),
+       aes(x = pc, y = cumsum( acp$sdev^2 / sum(acp$sdev^2)), group = 1)) +
+  geom_point() +
+  geom_line() +
+  theme_bw() +
+  labs(x = "Componente principal",
+       y = "Prop. varianza explicada acumulada")
+
+################ Ranking de atributos ###############
+#####################################################
+
+pc<-dim(x)[1] #Componentes principales a utilizar
+
+# Porcentaje que aporta cada Componente Principal
+Proporcion<-numeric()
+for(i in 1:pc){
+  if(i<2){
+    Proporcion<-rbind(Proporcion,c(i,summary(acp)[[6]][3,i]))
+  } else{  
+    Proporcion<-rbind(Proporcion,c(i,summary(acp)[[6]][3,i]-summary(acp)[[6]][3,i-1]))
+  }
+}
+Proporcion[,2]
+
+# Porcentaje que representa cada atributo en cada Componente Principal 
+Pesos<-numeric()
+for (j in 1:pc) {
+   Peso<-numeric()
+   for(i in 1:dim(x)[2]){
+    Peso<-rbind(Peso,c((abs(acp$rotation[i,j])/sum(abs(acp$rotation[,j])))*Proporcion[j,2]))
+   }
+    Pesos<-cbind(Pesos,Peso)
+  }
+Pesos
+dim(Pesos)
+
+# Porcentaje que representa cada atributo en todo el data set 
+Score<-numeric()
+for (i in 1:dim(Pesos)[1]) {
+  Score<-rbind(Score,sum(Pesos[i,]))
+}
+Score
+
+
+top<-30 #Numero de atributos que quiero seleccionar
+
+#Ranking de atributos en funcion del Porcentaje
+Ranking<-numeric()
+for(i in 1:top){
+    Ranking<-rbind(Ranking,c(which.max(Score),max(Score)))
+    Score[which.max(Score)]<-0
+}
+Ranking
+
+x_train<-x[,Ranking[,1]]
+dim(x_train)
+x_train
+boxplot(x_train)
+
+############ Regresion lineal multiple #############
+####################################################
+
+Regresion<-lm(y_train~ .,data = x_train)
+summary(Regresion)
+anova(Regresion)
+plot(Regresion)
+
+##### Evaluacion de la flexibilidad del modelo #####
+####################################################
+
+library(ggplot2)
+pol<-7
+cv_MSE <- rep(NA,pol)
+set.seed(1)
+
+
+for (i in 1:pol) {
+  modelo <- glm(y_train~poly(X228+X224+X229+X222+X4+X227+X221+X225+X9+X230+X223+X8+X226+X62+X1+X6+X5+X479+X66+X7+X68+X2+X288+X10+X3+X63+X290+X70+X476+X471,i),data = x_train)
+  predicciones <- predict(object = modelo, newdata = x_test)
+  cv_MSE[i] <- mean((y_test - predicciones)^2)
+}
+ggplot(data = data.frame(polinomio = 1:pol, cv_MSE = cv_MSE),
+       aes(x = polinomio, y = cv_MSE)) +
+  geom_point(colour = c("firebrick3")) +
+  geom_path() +
+  scale_x_continuous(breaks = c(0:pol)) +
+  theme_bw() + 
+  labs(title  =  'Test Error ~ Grado del polinomio') +
+  theme(plot.title = element_text(hjust = 0.5, face = 'bold'))
+
+############# 5 fold Cross Validation ##############
+#####################################################
+
+datos_cv<-data.frame(y_train,x_train)
+
+s <-sample(1:42,size = 42, replace = FALSE) #Desordenar los datos aleatoriamente
+dataset_cv <- datos_cv [ s ,]
+
+cv<-1
+MSR_cv<-numeric()
+while (cv<=dim(x_train)[1]) {
+  
+  if (cv>=25){
+    cvf<-cv+8
+    
+    y_train_cv<-dataset_cv[cv:cvf,1]
+    x_train_cv<-dataset_cv[cv:cvf,2:dim(datos_cv)[2]]
+    
+    y_test_cv<-dataset_cv[-c(cv:cvf),1]
+    x_test_cv<-dataset_cv[-c(cv:cvf),2:dim(datos_cv)[2]]
+    
+  } else{
+    cvf<-cv+7
+    
+    y_train_cv<-dataset_cv[cv:cvf,1]
+    x_train_cv<-dataset_cv[cv:cvf,2:dim(datos_cv)[2]]
+    
+    y_test_cv<-dataset_cv[-c(cv:cvf),1]
+    x_test_cv<-dataset_cv[-c(cv:cvf),2:dim(datos_cv)[2]]
+  }
+  
+  if (cv>=24){
+    cv<-cv+9
+  } else{
+    cv<-cv+8
+  }
+  
+  Regresion_cv<-lm(y_train_cv~ .,data = x_train_cv)
+  summary(Regresion)
+  
+  Predicciones<-predict(object = Regresion_cv,newdata = x_test_cv)
+  summary(Predicciones)
+  mean((y_test_cv-Predicciones)^2)
+  MSR_cv<-rbind(MSR_cv,mean((y_test_cv-Predicciones)^2))
+  
+}
+MSR_cv
+mean(MSR_cv) #Error promedio 5 fold Cross Validation
+sd(MSR_cv)
+   
+
+### Validacion con datos de Test mediante muestreo ###
+################## Modelo lineal #####################
+
+library(gsheet)
+url2 <- 'https://docs.google.com/spreadsheets/d/1cJZIUTPoYliSej8ZQumPdrvWjcZeRyuEqyC4JyXpx-8/edit#gid=1408241617'
+datos2<- gsheet2tbl(url2)
+norm2<- as.data.frame (apply ( datos2 , 2 , function ( datos2 ) ( datos2  - min ( datos2 )) / (max ( datos2 ) - min ( datos2 ))))
+
+y_test<-norm2[,1]
+x_test<-norm2[,colnames(x_train)]
+boxplot(x_test)
+
+Predicciones<-predict(object = Regresion,newdata = x_test)
+summary(Predicciones)
+mean((y_test-Predicciones)^2)
+
+
+
+
+MSE<-numeric()
+for (i in 1:100) {
+
+  indices <- sample( 1:nrow( norm2 ), 40, replace = FALSE )
+  muestra <- norm2[indices,]
+  
+  y_test<-muestra[,1]
+  x_test<-muestra[,colnames(x_train)]
+  
+  
+  Predicciones<-predict(object = Regresion,newdata = x_test)
+  summary(Predicciones)
+  
+  
+  MSE<-rbind(MSE,mean((y_test-Predicciones)^2))
+}
+MSE
+mean(MSE)
+sd(MSE)
+boxplot(MSE)
+
+### Validacion con datos de Test mediante muestreo ###
+################ Modelo cuadratico ###################
+
+Regresion<-glm(y_train~poly(X228+X224+X229+X222+X4+X227+X221+X225+X9+X230+X223+X8+X226+X62+X1+X6+X5+X479+X66+X7+X68+X2+X288+X10+X3+X63+X290+X70+X476+X471,2),data = x_train)
+summary(Regresion)
+anova(Regresion)
+plot(Regresion)
+
+
+library(gsheet)
+url2 <- 'https://docs.google.com/spreadsheets/d/1cJZIUTPoYliSej8ZQumPdrvWjcZeRyuEqyC4JyXpx-8/edit#gid=1408241617'
+datos2<- gsheet2tbl(url2)
+norm2<- as.data.frame (apply ( datos2 , 2 , function ( datos2 ) ( datos2  - min ( datos2 )) / (max ( datos2 ) - min ( datos2 ))))
+
+y_test<-norm2[,1]
+x_test<-norm2[,colnames(x_train)]
+boxplot(x_test)
+
+Predicciones<-predict(object = Regresion,newdata = x_test)
+summary(Predicciones)
+mean((y_test-Predicciones)^2)
+
+
+MSE<-numeric()
+for (i in 1:100) {
+  
+  indices <- sample( 1:nrow( norm2 ), 40, replace = FALSE )
+  muestra <- norm2[indices,]
+  
+  y_test<-muestra[,1]
+  x_test<-muestra[,colnames(x_train)]
+  
+  
+  Predicciones<-predict(object = Regresion,newdata = x_test)
+  summary(Predicciones)
+  
+  
+  MSE<-rbind(MSE,mean((y_test-Predicciones)^2))
+}
+MSE
+mean(MSE)
+sd(MSE)
+boxplot(MSE)
+
+######################################################
+######################### FIN ########################
